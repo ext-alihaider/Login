@@ -3,6 +3,8 @@ import psycopg2
 from psycopg2.extras import DictCursor
 import uuid
 from datetime import datetime, timedelta
+import re
+import socket  # Import socket for hostname resolution
 
 app = Flask(__name__)
 app.secret_key = 'your secret key'
@@ -22,10 +24,11 @@ def get_db_connection():
     )
     return conn
 
-def create_session(user_id, remote_addr, remote_host):
+def create_session(user_id, remote_addr):
     session_key = str(uuid.uuid4())
     logged_in = datetime.now()
     session_expiry = logged_in + timedelta(minutes=30)
+    remote_host = socket.gethostbyaddr(remote_addr)[0] if remote_addr else 'unknown'
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('INSERT INTO login (user_id, session_key, remote_addr, remote_host, logged_in, session_expiry, status, origin) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)',
@@ -61,7 +64,7 @@ def login():
             session['loggedin'] = True
             session['id'] = account['id']
             session['username'] = account['username']
-            session_key = create_session(account['id'], request.remote_addr, request.remote_host)
+            session_key = create_session(account['id'], request.remote_addr)
             session['session_key'] = session_key
             return redirect(url_for('home'))
         else:
@@ -76,6 +79,37 @@ def logout():
     session.pop('id', None)
     session.pop('username', None)
     session.pop('session_key', None)
+    return redirect(url_for('login'))
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    msg = ''
+    if request.method == 'POST' and 'username' in request.form and 'password' in request.form and 'email' in request.form:
+        username = request.form['username']
+        password = request.form['password']
+        email = request.form['email']
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=DictCursor)
+        cursor.execute('SELECT * FROM accounts WHERE username = %s', (username,))
+        account = cursor.fetchone()
+        if account:
+            msg = 'Account already exists!'
+        elif not re.match(r'[^@]+@[^@]+\.[^@]+', email):
+            msg = 'Invalid email address!'
+        elif not re.match(r'[A-Za-z0-9]+', username):
+            msg = 'Username must contain only characters and numbers!'
+        else:
+            cursor.execute('INSERT INTO accounts (username, password, email) VALUES (%s, %s, %s)', (username, password, email))
+            conn.commit()
+            msg = 'You have successfully registered!'
+        cursor.close()
+        conn.close()
+    return render_template('register.html', msg=msg)
+
+@app.route('/profile')
+def profile():
+    if 'loggedin' in session:
+        return render_template('profile.html', username=session['username'])
     return redirect(url_for('login'))
 
 @app.route('/home')
